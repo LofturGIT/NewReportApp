@@ -45,6 +45,7 @@ def process_files(pending_users_path, course_status_paths):
     # Load the pending users dataset
     pending_users_df = pd.read_csv(pending_users_path)
     pending_users_df['Email'] = pending_users_df['Email'].str.strip().str.lower()
+    pending_users_df['Email Domain'] = pending_users_df['Email'].str.split('@').str[1]
 
     template_path = 'template2.xlsx'
     logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logo.png')
@@ -54,10 +55,12 @@ def process_files(pending_users_path, course_status_paths):
         # Load the course status report
         course_status_df = pd.read_csv(course_status_path)
         course_status_df['Email'] = course_status_df['Email'].str.strip().str.lower()
+        course_status_df['Email Domain'] = course_status_df['Email'].str.split('@').str[1]
 
-        # Filter pending users
-        course_emails_set = set(course_status_df['Email'].dropna().unique())
-        filtered_pending_users = pending_users_df[~pending_users_df['Email'].isin(course_emails_set)]
+        # Filter pending users by matching email domains
+        matching_domains = set(course_status_df['Email Domain'].dropna().unique())
+        filtered_pending_users = pending_users_df[pending_users_df['Email Domain'].isin(matching_domains)]
+
         pending_users = filtered_pending_users[['Email', 'Last invite sent at']].copy()
         pending_users['Full name'] = 'Pending User'
         pending_users['Course name'] = 'Pending Course'
@@ -67,8 +70,6 @@ def process_files(pending_users_path, course_status_paths):
         pending_users['Enrolled'] = '-'
         pending_users['Started'] = '-'
         pending_users['Last accessed'] = '-'
-
-        # Fix: Ensure 'Invite last sent' date is shown correctly
         pending_users['Completed'] = pending_users['Last invite sent at'].apply(
             lambda x: f"Invite last sent: {x}" if pd.notna(x) and x.strip() else "Unknown"
         )
@@ -108,13 +109,13 @@ def process_files(pending_users_path, course_status_paths):
 
         # Add logo to the worksheet
         img = Image(logo_path)
-        img.anchor = "E4"  # Place the image in cell E4
+        img.anchor = "D4"  # Place the image in cell D4
         ws.add_image(img)
 
         # Save final report
         today_date = datetime.now().strftime('%Y-%m-%d')
         course_name = re.sub(r'[<>:"/\\|?*]', '_', combined_df['Course name'].iloc[0])
-        output_file = os.path.join(REPORTS_FOLDER, f"Everbright_Report_{course_name}_{today_date}.xlsx")
+        output_file = os.path.join(REPORTS_FOLDER, f"New_Report_{course_name}_{today_date}.xlsx")
         wb.save(output_file)
 
         combined_reports.append(output_file)
