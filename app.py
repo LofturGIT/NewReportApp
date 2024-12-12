@@ -2,12 +2,12 @@ import os
 from flask import Flask, request, render_template, send_file
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.drawing.image import Image
 from datetime import datetime
 import re
 
 app = Flask(__name__)
 
-# Define directories for uploads and reports
 UPLOAD_FOLDER = 'uploads'
 REPORTS_FOLDER = 'reports'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -45,22 +45,18 @@ def process_files(pending_users_path, course_status_paths):
     # Load the pending users dataset
     pending_users_df = pd.read_csv(pending_users_path)
     pending_users_df['Email'] = pending_users_df['Email'].str.strip().str.lower()
-    pending_users_df['Email Domain'] = pending_users_df['Email'].str.split('@').str[1]
 
-    # Template path (ensure this exists)
     template_path = 'template2.xlsx'
-
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logo.png')
     combined_reports = []
 
     for course_status_path in course_status_paths:
-        new_course_status_df = pd.read_csv(course_status_path)
-        new_course_status_df['Email'] = new_course_status_df['Email'].str.strip().str.lower()
-        new_course_status_df['Email Domain'] = new_course_status_df['Email'].str.split('@').str[1]
-
-        # Collect all unique emails from the course status dataset
-        course_emails_set = set(new_course_status_df['Email'].dropna().unique())
+        # Load the course status report
+        course_status_df = pd.read_csv(course_status_path)
+        course_status_df['Email'] = course_status_df['Email'].str.strip().str.lower()
 
         # Filter pending users
+        course_emails_set = set(course_status_df['Email'].dropna().unique())
         filtered_pending_users = pending_users_df[~pending_users_df['Email'].isin(course_emails_set)]
         pending_users = filtered_pending_users[['Email', 'Last invite sent at']].copy()
         pending_users['Full name'] = 'Pending User'
@@ -71,57 +67,51 @@ def process_files(pending_users_path, course_status_paths):
         pending_users['Enrolled'] = '-'
         pending_users['Started'] = '-'
         pending_users['Last accessed'] = '-'
-        pending_users['Completed'] = 'Invite last sent: ' + filtered_pending_users['Last invite sent at']
+
+        # Fix: Ensure 'Invite last sent' date is shown correctly
+        pending_users['Completed'] = pending_users['Last invite sent at'].apply(
+            lambda x: f"Invite last sent: {x}" if pd.notna(x) and x.strip() else "Unknown"
+        )
 
         # Combine course status and pending users
-        combined_df = pd.concat([new_course_status_df, pending_users], ignore_index=True)
+        combined_df = pd.concat([course_status_df, pending_users], ignore_index=True)
 
-        # Debug: Ensure Progress column exists
-        print("Combined DataFrame Columns:", combined_df.columns.tolist())
+        # Define 'Status' column
+        combined_df['Status'] = combined_df.apply(
+            lambda row: 'Passed' if row['Progress'] == 'Passed'
+            else 'In Progress' if row['Progress'] == 'In Progress'
+            else 'Not started',
+            axis=1
+        )
 
-        if 'Progress' not in combined_df.columns:
-            raise KeyError("The 'Progress' column is missing in the combined data!")
+        # Update 'Completed' column logic for course data
+        combined_df['Completed'] = combined_df.apply(
+            lambda row: f"Completed: {row['Completed'].split(' ')[0]}" if row['Status'] == 'Passed' and pd.notna(row['Completed']) and row['Completed'] != '-'
+            else f"Last accessed course: {row['Last accessed'].split(' ')[0]}" if row['Status'] == 'In Progress' and pd.notna(row['Last accessed']) and row['Last accessed'] != '-'
+            else f"Enrolled on: {row['Enrolled'].split(' ')[0]}" if row['Status'] == 'Not started' and pd.notna(row['Enrolled']) and row['Enrolled'] != '-'
+            else row['Completed'],  # Preserve "Invite last sent" for pending users
+            axis=1
+        )
 
-        # Define the 'Status' column based on 'Progress'
-        def determine_status(row):
-            if row['Progress'] == 'Passed':
-                return 'Passed'
-            elif row['Progress'] == 'In Progress':
-                return 'In Progress'
-            else:
-                return 'Not started'
-
-        combined_df['Status'] = combined_df.apply(determine_status, axis=1)
-
-        # Define the 'Completed' column
-        def determine_completed(row):
-            if row['Status'] == 'Passed':
-                return f"Completed: {row['Completed'].split(' ')[0]}" if pd.notna(row['Completed']) and row['Completed'] != '-' else 'Completed: Unknown'
-            elif row['Status'] == 'In Progress':
-                return f"Last accessed course: {row['Last accessed'].split(' ')[0]}" if pd.notna(row['Last accessed']) and row['Last accessed'] != '-' else 'Last accessed course: Unknown'
-            else:
-                return row['Completed']
-
-        combined_df['Completed'] = combined_df.apply(determine_completed, axis=1)
-
-        # Keep only the required columns
+        # Prepare final DataFrame
         final_df = combined_df[['Full name', 'Email', 'Course name', 'Status', 'Completed', 'Score']].copy()
-
-        # Add a percentage sign to the 'Score' column
-        final_df['Score'] = final_df['Score'].str.rstrip('%').astype(float).round(0).astype(int).astype(str) + '%'
-
-        # Rename columns
         final_df.rename(columns={'Full name': 'User'}, inplace=True)
 
-        # Save the report
+        # Save to Excel
         wb = load_workbook(template_path)
         ws = wb.active
-        start_row = 13
-        start_col = 2
+        start_row = 13  # Starting row for pasting data
+        start_col = 2   # Starting column for pasting data
         for r_idx, row in final_df.iterrows():
             for c_idx, value in enumerate(row):
                 ws.cell(row=start_row + r_idx, column=start_col + c_idx, value=value)
 
+        # Add logo to the worksheet
+        img = Image(logo_path)
+        img.anchor = "E4"  # Place the image in cell E4
+        ws.add_image(img)
+
+        # Save final report
         today_date = datetime.now().strftime('%Y-%m-%d')
         course_name = re.sub(r'[<>:"/\\|?*]', '_', combined_df['Course name'].iloc[0])
         output_file = os.path.join(REPORTS_FOLDER, f"Everbright_Report_{course_name}_{today_date}.xlsx")
@@ -129,7 +119,8 @@ def process_files(pending_users_path, course_status_paths):
 
         combined_reports.append(output_file)
 
-    return combined_reports[0]  # Return the first report
+    return combined_reports[0]
 
 if __name__ == '__main__':
+    print("Starting Flask App...")
     app.run(debug=True)
