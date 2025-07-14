@@ -1,9 +1,3 @@
-https://corr.learnupon.com/users/sign_in
-username: claire.marquand@nsm.group
-password: MyTempPassw0rd1414!
-
-
-
-https://corr.learnupon.com/users/sign_in
-username: tara.sherbourne@lts-tax.com
-username: MyTempPassw0rd1666!
+git add .
+git commit -m "Update app with latest working version"
+git push
