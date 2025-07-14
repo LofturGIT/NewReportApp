@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Select Domains</title>
+</head>
+<body>
+    <h1>Step 3: Select Domains to Match Pending Users</h1>
+    <form method="POST" action="/generate_report">
+        <input type="hidden" name="report_path" value="{{ report_path }}">
+        {% for domain in domains %}
+            <div>
+                <input type="checkbox" name="selected_domains" value="{{ domain }}" id="{{ domain }}">
+                <label for="{{ domain }}">{{ domain }}</label>
+            </div>
+        {% endfor %}
+        <button type="submit">Generate Report</button>
+    </form>
+</body>
+</html>

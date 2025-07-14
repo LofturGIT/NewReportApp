@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Select Domains and Group</title>
+</head>
+<body>
+    <h1>Select Domains and Group</h1>
+    <form action="{{ url_for('generate_report') }}" method="POST">
+        <input type="hidden" name="report_path" value="{{ report_path }}">
+        
+        <h3>Choose which email domains to include:</h3>
+        {% for domain in domains %}
+            <input type="checkbox" name="selected_domains" value="{{ domain }}" checked> {{ domain }}<br>
+        {% endfor %}
+        
+        <h3>Select group for this report:</h3>
+        {% for group in groups %}
+            <input type="radio" name="selected_group" value="{{ group }}" required> {{ group }}<br>
+        {% endfor %}
+
+        <br>
+        <button type="submit">Generate Report</button>
+    </form>
+</body>
+</html>

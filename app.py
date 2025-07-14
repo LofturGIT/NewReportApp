@@ -1,127 +1,170 @@
 import os
-from flask import Flask, request, render_template, send_file
 import pandas as pd
+from flask import Flask, render_template, request, send_file, session, redirect, url_for
+from werkzeug.utils import secure_filename
+from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image
-from datetime import datetime
-import re
 
 app = Flask(__name__)
+app.secret_key = 'supersecretkey'
 
 UPLOAD_FOLDER = 'uploads'
+TEMPLATE_PATH = 'template2.xlsx'
+LOGO_PATH = 'logo.png'
 REPORTS_FOLDER = 'reports'
+
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(REPORTS_FOLDER, exist_ok=True)
 
-@app.route('/', methods=['GET', 'POST'])
-def upload_files():
-    if request.method == 'POST':
-        # Get uploaded files
-        pending_users_file = request.files.get('pending_users')
-        course_status_files = request.files.getlist('course_status')
+PENDING_USER_FILENAME = 'pending_users.csv'
 
-        if not pending_users_file or not course_status_files:
-            return "Please upload both Pending Users and Course Status files!", 400
+def get_pending_users_path():
+    return os.path.join(UPLOAD_FOLDER, PENDING_USER_FILENAME)
 
-        # Save uploaded files
-        pending_users_path = os.path.join(UPLOAD_FOLDER, pending_users_file.filename)
-        pending_users_file.save(pending_users_path)
+def get_status(row):
+    completed = str(row.get('Completed', '')).strip()
+    last_accessed = str(row.get('Last accessed', '')).strip()
 
-        course_status_paths = []
-        for file in course_status_files:
-            file_path = os.path.join(UPLOAD_FOLDER, file.filename)
-            file.save(file_path)
-            course_status_paths.append(file_path)
+    if completed and completed != '-':
+        return 'Passed'
+    elif last_accessed and last_accessed != '-':
+        return 'In Progress'
+    else:
+        return 'Not Started'
 
-        # Process files
-        report_path = process_files(pending_users_path, course_status_paths)
+def get_completed_date(row):
+    status = row['Status']
+    try:
+        if status == 'Passed':
+            date = pd.to_datetime(row['Completed'], errors='coerce', dayfirst=True)
+        elif status == 'In Progress':
+            date = pd.to_datetime(row['Last accessed'], errors='coerce', dayfirst=True)
+        elif status == 'Not Started':
+            date = pd.to_datetime(row['Enrolled'], errors='coerce', dayfirst=True)
+        else:
+            return ''
+        if pd.notna(date):
+            return date.strftime('%d/%m/%Y')
+    except:
+        return ''
+    return ''
 
-        # Send the generated report back to the user
-        return send_file(report_path, as_attachment=True)
-
-    return render_template('upload.html')
-
-def process_files(pending_users_path, course_status_paths):
-    # Load the pending users dataset
+def process_files(pending_users_path, course_status_path, selected_domains, selected_group):
+    # Load pending users
     pending_users_df = pd.read_csv(pending_users_path)
-    pending_users_df['Email'] = pending_users_df['Email'].str.strip().str.lower()
     pending_users_df['Email Domain'] = pending_users_df['Email'].str.split('@').str[1]
+    filtered_pending = pending_users_df[pending_users_df['Email Domain'].isin(selected_domains)].copy()
 
-    template_path = 'template2.xlsx'
-    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logo.png')
-    combined_reports = []
+    # Standardize emails for matching
+    filtered_pending['Email'] = filtered_pending['Email'].str.lower().str.strip()
+    pending_emails_set = set(filtered_pending['Email'])
 
-    for course_status_path in course_status_paths:
-        # Load the course status report
-        course_status_df = pd.read_csv(course_status_path)
-        course_status_df['Email'] = course_status_df['Email'].str.strip().str.lower()
-        course_status_df['Email Domain'] = course_status_df['Email'].str.split('@').str[1]
+    # Load report
+    df = pd.read_csv(course_status_path)
+    df.columns = df.columns.str.strip()
+    df['Email'] = df['Email'].str.lower().str.strip()
 
-        # Filter pending users by matching email domains
-        matching_domains = set(course_status_df['Email Domain'].dropna().unique())
-        filtered_pending_users = pending_users_df[pending_users_df['Email Domain'].isin(matching_domains)]
+    # Identify users who haven't completed
+    completed_emails = set(df['Email'].dropna().unique())
+    filtered_pending = filtered_pending[~filtered_pending['Email'].isin(completed_emails)].copy()
 
-        pending_users = filtered_pending_users[['Email', 'Last invite sent at']].copy()
-        pending_users['Full name'] = 'Pending User'
-        pending_users['Course name'] = 'Pending Course'
-        pending_users['Progress'] = 'Not started'
-        pending_users['Score'] = '0%'
-        pending_users['Course completion %'] = '0%'
-        pending_users['Enrolled'] = '-'
-        pending_users['Started'] = '-'
-        pending_users['Last accessed'] = '-'
-        pending_users['Completed'] = pending_users['Last invite sent at'].apply(
-            lambda x: f"Invite last sent: {x}" if pd.notna(x) and x.strip() else "Unknown"
-        )
+    # Format pending user fields
+    filtered_pending['User'] = 'Pending user'
+    filtered_pending['Course name'] = 'Pending course'
+    filtered_pending['Status'] = 'Not Started'
+    filtered_pending['Score'] = '0%'
 
-        # Combine course status and pending users
-        combined_df = pd.concat([course_status_df, pending_users], ignore_index=True)
+    # ✅ FIX: Use dayfirst=True for proper British format
+    filtered_pending['Date'] = filtered_pending['Last invite sent at'].apply(
+        lambda x: pd.to_datetime(x, errors='coerce', dayfirst=True).strftime('%d/%m/%Y')
+        if pd.notna(pd.to_datetime(x, errors='coerce', dayfirst=True)) else ''
+    )
 
-        # Define 'Status' column
-        combined_df['Status'] = combined_df.apply(
-            lambda row: 'Passed' if row['Progress'] == 'Passed'
-            else 'In Progress' if row['Progress'] == 'In Progress'
-            else 'Not started',
-            axis=1
-        )
+    pending_final = filtered_pending[['User', 'Email', 'Course name', 'Status', 'Date', 'Score']]
 
-        # Update 'Completed' column logic for course data
-        combined_df['Completed'] = combined_df.apply(
-            lambda row: f"Completed: {row['Completed'].split(' ')[0]}" if row['Status'] == 'Passed' and pd.notna(row['Completed']) and row['Completed'] != '-'
-            else f"Last accessed course: {row['Last accessed'].split(' ')[0]}" if row['Status'] == 'In Progress' and pd.notna(row['Last accessed']) and row['Last accessed'] != '-'
-            else f"Enrolled on: {row['Enrolled'].split(' ')[0]}" if row['Status'] == 'Not started' and pd.notna(row['Enrolled']) and row['Enrolled'] != '-'
-            else row['Completed'],  # Preserve "Invite last sent" for pending users
-            axis=1
-        )
+    # Prepare main dataframe
+    df['User'] = df['Full name']
+    df['Status'] = df.apply(get_status, axis=1)
+    df['Date'] = df.apply(get_completed_date, axis=1)
+    df['Score'] = df['Score'].str.rstrip('%').astype(float).round(0).astype(int).astype(str) + '%'
 
-        # Prepare final DataFrame
-        final_df = combined_df[['Full name', 'Email', 'Course name', 'Status', 'Completed', 'Score']].copy()
-        final_df.rename(columns={'Full name': 'User'}, inplace=True)
+    completed_final = df[['User', 'Email', 'Course name', 'Status', 'Date', 'Score']]
 
-        # Save to Excel
-        wb = load_workbook(template_path)
-        ws = wb.active
-        start_row = 13  # Starting row for pasting data
-        start_col = 2   # Starting column for pasting data
-        for r_idx, row in final_df.iterrows():
-            for c_idx, value in enumerate(row):
-                ws.cell(row=start_row + r_idx, column=start_col + c_idx, value=value)
+    combined = pd.concat([completed_final, pending_final], ignore_index=True)
 
-        # Add logo to the worksheet
-        img = Image(logo_path)
-        img.anchor = "D4"  # Place the image in cell D4
+    # Load template and write to Excel
+    wb = load_workbook(TEMPLATE_PATH)
+    ws = wb.active
+
+    start_row = 13
+    for idx, col in enumerate(['User', 'Email', 'Course name', 'Status', 'Date', 'Score']):
+        for i, value in enumerate(combined[col], start=start_row):
+            ws.cell(row=i, column=idx + 2, value=value)
+
+    # Add logo if it exists
+    if os.path.exists(LOGO_PATH):
+        img = Image(LOGO_PATH)
+        img.anchor = "D4"
         ws.add_image(img)
 
-        # Save final report
-        today_date = datetime.now().strftime('%Y-%m-%d')
-        course_name = re.sub(r'[<>:"/\\|?*]', '_', combined_df['Course name'].iloc[0])
-        output_file = os.path.join(REPORTS_FOLDER, f"New_Report_{course_name}_{today_date}.xlsx")
-        wb.save(output_file)
+    # Save report
+    course_name = df['Course name'].iloc[0].replace(" ", "_").replace("/", "-")
+    group_part = selected_group.replace(" ", "_").replace("/", "-")
+    date_str = datetime.now().strftime("%d-%m-%Y")
+    output_path = os.path.join(REPORTS_FOLDER, f"Report_{course_name}_{group_part}_{date_str}.xlsx")
+    wb.save(output_path)
 
-        combined_reports.append(output_file)
+    return output_path
 
-    return combined_reports[0]
+@app.route('/', methods=['GET', 'POST'])
+def upload_pending():
+    if request.method == 'POST':
+        file = request.files['pending_users']
+        if file:
+            pending_path = get_pending_users_path()
+            file.save(pending_path)
+            return redirect(url_for('upload_report'))
+    return render_template('upload_pending.html')
+
+@app.route('/upload_report', methods=['GET', 'POST'])
+def upload_report():
+    if not os.path.exists(get_pending_users_path()):
+        return redirect(url_for('upload_pending'))
+
+    if request.method == 'POST':
+        report_file = request.files['report_file']
+        if not report_file:
+            return "Please upload a report file."
+
+        path = os.path.join(UPLOAD_FOLDER, secure_filename(report_file.filename))
+        report_file.save(path)
+
+        df = pd.read_csv(path)
+        domains = df['Email'].str.split('@').str[1].dropna().unique().tolist()
+
+        try:
+            groups_series = df['User’s groups'].dropna().str.split(',')
+            all_groups = set(group.strip() for sublist in groups_series for group in sublist)
+            groups = sorted(all_groups)
+        except KeyError:
+            groups = []
+
+        return render_template('select_domains_and_group.html', report_path=path, domains=domains, groups=groups)
+
+    return render_template('upload_report.html')
+
+@app.route('/generate_report', methods=['POST'])
+def generate_report():
+    report_path = request.form['report_path']
+    selected_domains = request.form.getlist('selected_domains')
+    selected_group = request.form.get('selected_group')
+
+    if not selected_domains or not selected_group:
+        return "You must select at least one domain and one group."
+
+    output = process_files(get_pending_users_path(), report_path, selected_domains, selected_group)
+    return send_file(output, as_attachment=True)
 
 if __name__ == '__main__':
-    print("Starting Flask App...")
     app.run(debug=True)
