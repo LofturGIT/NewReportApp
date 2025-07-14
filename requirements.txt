@@ -1,3 +1,5 @@
-git add .
-git commit -m "Update app with latest working version"
-git push
+flask==2.3.3
+pandas==2.2.2
+openpyxl==3.1.2
+Werkzeug==2.3.7
+gunicorn==21.2.0
